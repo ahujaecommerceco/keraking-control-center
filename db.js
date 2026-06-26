@@ -213,13 +213,18 @@ async function recentNimbus(limit) {
   const r = await q(`SELECT order_number, awb, status, updated_at FROM nimbus_shipments ORDER BY updated_at DESC LIMIT $1`, [limit || 50]);
   return r.rows;
 }
-// Map order_number -> { status, awb } using the latest event per order.
+// Map DIGITS-ONLY order number -> { status, awb }, latest event per order.
+// NimbusPost sends references like "kk2468"; Shopify uses "#2468" — matching on
+// the numeric part makes them line up regardless of prefix.
 async function nimbusByOrder() {
   const r = await q(`SELECT DISTINCT ON (order_number) order_number, status, awb
                      FROM nimbus_shipments WHERE order_number IS NOT NULL
                      ORDER BY order_number, updated_at DESC`);
   const map = {};
-  for (const row of r.rows) map[row.order_number] = { status: row.status, awb: row.awb };
+  for (const row of r.rows) {
+    const key = String(row.order_number).replace(/[^0-9]/g, "");
+    if (key) map[key] = { status: row.status, awb: row.awb, ref: row.order_number };
+  }
   return map;
 }
 
