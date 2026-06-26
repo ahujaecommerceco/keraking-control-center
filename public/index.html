@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KERAKING · Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Cormorant+Garamond:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23D4AF37'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css?v=19" />
+</head>
+<body>
+  <!-- Brand logo (theme-adaptive symbol; wordmark uses currentColor) -->
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="brandLogo" viewBox="0 0 1120 220">
+      <defs>
+        <linearGradient id="kkGold" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#F3DD8A" /><stop offset="0.5" stop-color="#D4AF37" /><stop offset="1" stop-color="#A8801C" />
+        </linearGradient>
+      </defs>
+      <g transform="translate(110,110)">
+        <circle r="100" fill="url(#kkGold)" />
+        <circle r="99" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="2" />
+        <g stroke="#161616" stroke-width="10" fill="none" stroke-linecap="round">
+          <path d="M -10 -58 C 28 -40 26 -12 -4 2 C -32 16 -28 44 4 58" />
+          <path d="M 18 -54 C 44 -34 38 -10 12 4 C -12 16 -8 40 16 54" />
+        </g>
+        <g fill="#161616"><path d="M -36 -4 L -32 0 L -36 4 L -40 0 Z" /><path d="M 36 8 L 40 12 L 36 16 L 32 12 Z" /></g>
+      </g>
+      <text x="258" y="150" font-family="'Cormorant Garamond', Georgia, serif" font-size="132" font-weight="700" letter-spacing="6" fill="currentColor">KERAKING</text>
+    </symbol>
+  </svg>
+
+  <!-- Top bar -->
+  <header class="nav">
+    <button id="menuBtn" class="btn icon-btn" title="Menu" aria-label="Open menu">☰</button>
+    <div class="nav-left"><span class="logo-slot" data-size="nav"></span></div>
+    <div class="nav-right">
+      <span id="sourceBadge" class="badge delivery-only">—</span>
+      <button id="refreshBtn" class="btn delivery-only">↻ Refresh</button>
+      <button id="themeToggle" class="btn icon-btn" title="Toggle light / dark">🌙</button>
+    </div>
+  </header>
+
+  <!-- Left burger menu -->
+  <div id="menuOverlay" class="overlay menu-overlay hidden">
+    <aside class="side-menu">
+      <div class="side-head"><span class="logo-slot" data-size="nav"></span><button id="closeMenu" class="btn icon-btn">✕</button></div>
+      <nav class="menu-list">
+        <button class="menu-item" data-view="home"><span class="mi-ic">🏠</span> Home</button>
+        <button class="menu-item" data-view="delivery"><span class="mi-ic">🚚</span> Delivery Matrix</button>
+        <button class="menu-item" data-view="unit"><span class="mi-ic">📊</span> Unit Economics Analyser</button>
+        <button class="menu-item" data-view="calling"><span class="mi-ic">📞</span> Calling</button>
+        <button class="menu-item admin-only" data-view="users"><span class="mi-ic">👥</span> User Management</button>
+      </nav>
+      <div class="side-foot muted small">KERAKING Control Center</div>
+    </aside>
+  </div>
+
+  <main>
+    <!-- HOME -->
+    <section id="view-home" class="view">
+      <div class="home-wrap">
+        <div class="welcome">Welcome to</div>
+        <span class="logo-slot" data-size="home"></span>
+        <div class="home-tag">Control Center</div>
+      </div>
+
+      <div class="home-setup">
+        <div class="panel setup-panel">
+          <h2>Connections</h2>
+          <div class="muted small">Set these once — they're used across every dashboard.</div>
+
+          <h3>NimbusPost</h3>
+          <label>Email</label>
+          <input id="npEmail" class="input" autocomplete="off" placeholder="you+xxxx@example.com" />
+          <label>Password</label>
+          <input id="npPassword" class="input" type="password" autocomplete="off" />
+
+          <h3>Shopify</h3>
+          <div id="shStatus" class="conn-status muted small">Checking connection…</div>
+          <label>Store domain</label>
+          <input id="shShop" class="input" autocomplete="off" placeholder="your-store or your-store.myshopify.com" />
+          <label>Client ID</label>
+          <input id="shClientId" class="input" autocomplete="off" placeholder="from your Dev Dashboard app" />
+          <label>Client secret</label>
+          <input id="shClientSecret" class="input" type="password" autocomplete="off" placeholder="shpss_…" />
+          <div class="setup-actions">
+            <button id="connectShopify" class="btn primary">🔗 Connect Shopify</button>
+            <button id="disconnectShopify" class="btn danger">Disconnect</button>
+          </div>
+          <div class="muted small" style="margin-top:10px">
+            Create an app in the <b>Dev Dashboard</b> (dev.shopify.com) with scopes
+            <code>read_orders</code>, <code>read_products</code>, <code>read_fulfillments</code>,
+            and add this redirect URL: <code id="redirectUrl"></code>.
+          </div>
+
+          <div class="setup-actions" style="margin-top:18px">
+            <button id="saveSettings" class="btn primary">Save</button>
+            <button id="homeRefresh" class="btn">↻ Refresh data</button>
+            <button id="clearSettings" class="btn danger">Clear</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- UNIT ECONOMICS -->
+    <section id="view-unit" class="view hidden">
+      <div class="delivery-head">
+        <div>
+          <h1>Unit Economics Analyser</h1>
+          <div class="sub muted">Per delivered order. Costs are GST-inclusive unless noted; the funnel is pulled from your live delivery data.</div>
+        </div>
+        <div class="ue-variant-pick">
+          <label>Analyse</label>
+          <select id="ueVariant"></select>
+        </div>
+      </div>
+
+      <div class="ue-grid">
+        <div class="panel ue-inputs">
+          <h2>Inputs</h2>
+          <h3>Price</h3>
+          <div class="ue-row"><label>Selling price (incl GST)</label><input id="ue_sp" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_sp_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>Prepaid discount (flat %)</label><input id="ue_disc" class="input ue-in" type="number" /><span class="gstcol"></span></div>
+          <h3>Product &amp; packaging</h3>
+          <div class="ue-row"><label>Product cost / unit (incl GST)</label><input id="ue_prod" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_prod_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>Packaging / shipment (incl GST)</label><input id="ue_pkg" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_pkg_g" class="input ue-in gst" type="number" /></span></div>
+          <h3>Shipping (avg, incl GST)</h3>
+          <div class="ue-row"><label>Forward — prepaid</label><input id="ue_fwpp" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_fwpp_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>Forward — COD</label><input id="ue_fwcod" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_fwcod_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>Backward / RTO — COD</label><input id="ue_rto" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_rto_g" class="input ue-in gst" type="number" /></span></div>
+          <h3>COD &amp; payment</h3>
+          <div class="ue-row"><label>COD fee — delivered (incl GST)</label><input id="ue_codfee" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_codfee_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>COD gateway (% excl GST)</label><input id="ue_codgw" class="input ue-in" type="number" step="0.01" /><span class="gstcol">GST%<input id="ue_codgw_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>Prepaid gateway (% excl GST)</label><input id="ue_ppgw" class="input ue-in" type="number" step="0.01" /><span class="gstcol">GST%<input id="ue_ppgw_g" class="input ue-in gst" type="number" /></span></div>
+          <h3>Other</h3>
+          <div class="ue-row"><label>CRM cost / shipment (incl GST)</label><input id="ue_crm" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_crm_g" class="input ue-in gst" type="number" /></span></div>
+          <div class="ue-row"><label>Add. cost / order (excl GST)</label><input id="ue_addcost" class="input ue-in" type="number" /><span class="gstcol"></span></div>
+          <h3>Marketing</h3>
+          <div class="ue-row"><label>Ad cost / order placed (excl GST)</label><input id="ue_ad" class="input ue-in" type="number" /><span class="gstcol">GST%<input id="ue_ad_g" class="input ue-in gst" type="number" /></span></div>
+          <h3>Funnel (from live data — editable)</h3>
+          <div class="ue-row"><label>COD share %</label><input id="ue_codpct" class="input ue-in" type="number" placeholder="live" /><span class="gstcol"></span></div>
+          <div class="ue-row"><label>COD confirmation %</label><input id="ue_codconf" class="input ue-in" type="number" placeholder="live" /><span class="gstcol"></span></div>
+          <div class="ue-row"><label>COD delivery (FAD) %</label><input id="ue_coddeliv" class="input ue-in" type="number" placeholder="live" /><span class="gstcol"></span></div>
+          <div class="ue-row"><label>Prepaid delivery %</label><input id="ue_ppdeliv" class="input ue-in" type="number" /><span class="gstcol"></span></div>
+          <div class="ue-actions">
+            <button id="ueUseLive" class="btn">↻ Use live funnel</button>
+            <button id="ueReset" class="btn danger">Reset this variant</button>
+          </div>
+        </div>
+
+        <div class="ue-results-col">
+          <div class="ue-subtabs">
+            <button class="ue-tab active" data-uetab="econ">Economics</button>
+            <button class="ue-tab" data-uetab="gst">GST &amp; Net Profit</button>
+          </div>
+          <div id="ueEcon" class="panel"></div>
+          <div id="ueGst" class="panel hidden"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CALLING -->
+    <section id="view-calling" class="view hidden">
+      <div class="delivery-head">
+        <div><h1>Order Confirmation Calling</h1><div class="sub muted" id="callSummary">loading…</div></div>
+        <button id="callNext" class="btn primary">Get next order →</button>
+      </div>
+      <div id="callCard" class="call-area"></div>
+    </section>
+
+    <!-- USER MANAGEMENT (admin) -->
+    <section id="view-users" class="view hidden">
+      <div class="delivery-head"><div><h1>User Management</h1><div class="sub muted">Add team members and choose exactly which dashboards each can see. Non-admins can only view their enabled modules — they can't edit anything or see any API keys/connections.</div></div></div>
+
+      <div class="panel" style="margin-top:14px">
+        <h2>Add a user</h2>
+        <div class="user-form">
+          <div><label>Name</label><input id="nu_name" class="input" placeholder="Full name" /></div>
+          <div><label>Email</label><input id="nu_email" class="input" placeholder="name@kera-king.com" /></div>
+          <div><label>Phone</label><input id="nu_phone" class="input" placeholder="+91…" /></div>
+          <div><label>Role</label><select id="nu_role"><option value="user">User</option><option value="admin">Admin (full access)</option></select></div>
+        </div>
+        <div class="mod-row" id="nu_modules"></div>
+        <div class="setup-actions"><button id="nu_add" class="btn primary">Add user</button><span id="nu_msg" class="muted small"></span></div>
+      </div>
+
+      <div class="panel">
+        <h2>Team</h2>
+        <div class="table-wrap"><table id="usersTable">
+          <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Modules</th><th>Active</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- DELIVERY MATRIX -->
+    <section id="view-delivery" class="view hidden">
+      <div class="delivery-head">
+        <div><h1 id="brandName">Delivery Matrix</h1><div class="sub" id="brandSub">loading…</div></div>
+      </div>
+
+      <div id="banner" class="banner hidden"></div>
+
+      <section class="scopebar">
+        <div class="scope-group">
+          <label>View</label>
+          <select id="productSelect"></select>
+          <select id="variantSelect"></select>
+        </div>
+        <div class="scope-count" id="scopeCount"></div>
+      </section>
+
+      <section class="cards" id="cards"></section>
+
+      <section class="panel">
+        <h2>Average selling price &amp; per-variant rates</h2>
+        <div class="muted small">Selling price is the average actually paid in Shopify order history. Click a column header to sort; click a row to scope the dashboard to it.</div>
+        <div class="table-wrap">
+          <table id="variantTable">
+            <thead>
+              <tr>
+                <th class="sortable" data-k="name">Product</th>
+                <th class="sortable" data-k="variant">Variant</th>
+                <th class="sortable num" data-k="price">Avg selling price</th>
+                <th class="sortable num" data-k="orders">Orders</th>
+                <th class="sortable num" data-k="cod">COD share</th>
+                <th class="sortable num" data-k="fad">COD FAD</th>
+                <th class="sortable num" data-k="denom">FAD denom</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Delivery by courier · risk · payment</h2>
+          <input id="cbFilter" class="input" placeholder="Filter rows…" />
+        </div>
+        <div class="cb-filters">
+          <div class="scope-group"><label>Courier</label><select id="cbCourier"></select></div>
+          <div class="scope-group"><label>Risk</label><select id="cbRisk"></select></div>
+          <div class="scope-group"><label>Payment</label><select id="cbPayment"></select></div>
+          <div class="scope-group"><label>Pickup delay</label><select id="cbDelay"></select></div>
+        </div>
+        <div class="muted small" style="margin-top:8px"><b>COD FAD</b> = delivered ÷ (delivered + RTO + exception + attempted-pending), aged 5–30 days. <b>Predicted</b> projects still-open shipments forward. Leave filters on "All" to see every combination.</div>
+        <div class="table-wrap">
+          <table id="courierTable">
+            <thead>
+              <tr>
+                <th class="sortable" data-k="courier">Courier</th>
+                <th class="sortable" data-k="risk">Risk</th>
+                <th class="sortable" data-k="payment">Payment</th>
+                <th class="sortable" data-k="delay">Pickup delay</th>
+                <th class="sortable num" data-k="orders">Orders</th>
+                <th class="sortable num" data-k="fadRate">COD FAD</th>
+                <th class="sortable num" data-k="fadDenom">FAD denom</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" data-perf="ndr">
+        <h2>Top NDR reasons</h2>
+        <div class="muted small">Most common non-delivery reasons for shipments in the selected shipment-date range.</div>
+        <div class="cb-filters perf-ctl"></div>
+        <div class="table-wrap"><table class="perf-tbl"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <section class="panel" data-perf="daily">
+        <h2>Daily summary</h2>
+        <div class="muted small">FAD performance &amp; total shipments per shipment-creation day. Filter freely; click headers to sort.</div>
+        <div class="cb-filters perf-ctl"></div>
+        <div class="table-wrap tall"><table class="perf-tbl"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <section class="panel" data-perf="state">
+        <h2>State-wise performance</h2>
+        <div class="muted small">FAD performance &amp; total shipments per state.</div>
+        <div class="cb-filters perf-ctl"></div>
+        <div class="table-wrap tall"><table class="perf-tbl"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <section class="panel" data-perf="varprod">
+        <h2>Product / variant performance</h2>
+        <div class="muted small">FAD performance &amp; total shipments per product or variant.</div>
+        <div class="cb-filters perf-ctl"></div>
+        <div class="table-wrap tall"><table class="perf-tbl"><thead></thead><tbody></tbody></table></div>
+      </section>
+
+      <footer class="foot"><span id="footStamp"></span></footer>
+    </section>
+  </main>
+
+  <script src="sample-data.js?v=19"></script>
+  <script src="metrics.js?v=19"></script>
+  <script src="app.js?v=19"></script>
+</body>
+</html>
