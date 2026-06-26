@@ -103,6 +103,19 @@ function readJson(req) {
     req.on("end", () => { try { resolve(b ? JSON.parse(b) : {}); } catch { resolve({}); } });
   });
 }
+// Reads a body that may be JSON OR x-www-form-urlencoded (for external webhooks).
+function readBody(req) {
+  return new Promise((resolve) => {
+    let b = ""; req.on("data", (c) => { b += c; if (b.length > 5e6) req.destroy(); });
+    req.on("end", () => {
+      const s = b.trim();
+      if (!s) return resolve({});
+      try { return resolve(JSON.parse(s)); } catch (_) {}
+      try { return resolve(Object.fromEntries(new URLSearchParams(s))); } catch (_) {}
+      resolve({});
+    });
+  });
+}
 function shopHost(shop) {
   let s = String(shop || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   if (s && !s.includes(".")) s += ".myshopify.com";
@@ -642,7 +655,18 @@ async function buildCallQueue() {
   const { shop, token } = resolveShopify();
   if (!shop || !token) return { orders: [], byNum: {} };
   const { raw } = await fetchShopify(shop, token, 4);
-  const cod = raw.filter((o) => detectPayment(o) === "cod" && !isBooked(o));
+  // NimbusPost is the source of truth for "has this been booked/cancelled?".
+  // Any order NimbusPost has a shipment record for (booked, in transit,
+  // cancelled, anything) is NOT a confirmation-call candidate. Shopify's
+  // fulfillment/AWB is only a fallback for orders we have no webhook event for.
+  const nimbus = await db.nimbusByOrder().catch(() => ({}));
+  const cod = raw.filter((o) => {
+    if (detectPayment(o) !== "cod") return false;
+    const n = String(o.name || o.order_number || o.id).replace(/^#/, "");
+    if (nimbus[n]) return false;     // NimbusPost already has this shipment
+    if (isBooked(o)) return false;   // Shopify shows a shipment/AWB (fallback)
+    return true;
+  });
   const nums = cod.map((o) => String(o.name || o.order_number || o.id).replace(/^#/, ""));
   const [attempts, actions, locks] = await Promise.all([db.attemptsByOrder(nums), db.allActions(), db.activeLocks()]);
   const lockMap = {}; locks.forEach((l) => (lockMap[l.order_number] = l));
@@ -805,6 +829,19 @@ const server = http.createServer(async (req, res) => {
     }
     // Exotel posts call status here (public — Exotel can't carry a session).
     if (pathname === "/webhooks/exotel") { try { await readJson(req); } catch (_) {} res.writeHead(200); return res.end("ok"); }
+    // NimbusPost pushes shipment/AWB/status events here (public).
+    if (pathname === "/webhooks/nimbus") {
+      let p = {};
+      try { p = await readBody(req); } catch (_) {}
+      try {
+        const d = p && p.data && typeof p.data === "object" ? Object.assign({}, p, p.data) : p;
+        const orderNumber = String(d.order_number || d.order_id || d.orderid || d.reference || d.client_order_id || d.order || "").replace(/^#/, "");
+        const awb = String(d.awb || d.awb_number || d.tracking_number || d.waybill || "").trim();
+        const status = String(d.status || d.current_status || d.status_text || d.shipment_status || d.order_status || "").trim();
+        if ((orderNumber || awb) && db.dbEnabled) await db.upsertNimbusShipment({ awb, orderNumber, status, raw: p });
+      } catch (_) {}
+      res.writeHead(200); return res.end("ok");
+    }
 
     // ---------- session gate (only in DB / multi-user mode) ----------
     let sessionUser = null;

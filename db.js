@@ -77,6 +77,16 @@ async function init() {
     caller_name   TEXT NOT NULL DEFAULT '',
     at            TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  // Shipment status pushed by NimbusPost webhooks (authoritative booking status).
+  await q(`CREATE TABLE IF NOT EXISTS nimbus_shipments (
+    ref           TEXT PRIMARY KEY,             -- awb, else 'ord:<order_number>'
+    order_number  TEXT,
+    awb           TEXT,
+    status        TEXT NOT NULL DEFAULT '',
+    raw           JSONB,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS nimbus_order_idx ON nimbus_shipments(order_number)`);
 
   // Seed the admin from env ADMIN_EMAIL (full access). Safe to run repeatedly.
   const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
@@ -181,10 +191,33 @@ async function allActions() {
   return map;
 }
 
+/* ---- NimbusPost shipment status (from webhooks) ---- */
+async function upsertNimbusShipment({ awb, orderNumber, status, raw }) {
+  const ref = awb || (orderNumber ? "ord:" + orderNumber : null);
+  if (!ref) return;
+  await q(
+    `INSERT INTO nimbus_shipments (ref, order_number, awb, status, raw, updated_at)
+     VALUES ($1,$2,$3,$4,$5, now())
+     ON CONFLICT (ref) DO UPDATE SET order_number=COALESCE($2,nimbus_shipments.order_number),
+       awb=COALESCE($3,nimbus_shipments.awb), status=$4, raw=$5, updated_at=now()`,
+    [ref, orderNumber || null, awb || null, String(status || ""), raw ? JSON.stringify(raw) : null]
+  );
+}
+// Map order_number -> { status, awb } using the latest event per order.
+async function nimbusByOrder() {
+  const r = await q(`SELECT DISTINCT ON (order_number) order_number, status, awb
+                     FROM nimbus_shipments WHERE order_number IS NOT NULL
+                     ORDER BY order_number, updated_at DESC`);
+  const map = {};
+  for (const row of r.rows) map[row.order_number] = { status: row.status, awb: row.awb };
+  return map;
+}
+
 module.exports = {
   dbEnabled, MODULES, init, q,
   getUserByEmail, getUserById, listUsers, createUser, updateUser,
   saveOtp, getOtp, bumpOtpAttempts, clearOtp,
   createSession, getSession, deleteSession,
   logAttempt, attemptsByOrder, lockOrder, activeLocks, setAction, allActions,
+  upsertNimbusShipment, nimbusByOrder,
 };
