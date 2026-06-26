@@ -118,6 +118,18 @@ select:focus, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px 
 .call-actions { display: flex; flex-direction: column; gap: 10px; align-content: start; }
 .call-actions .btn { width: 100%; justify-content: center; }
 .btn.confirm-btn { background: var(--good); border-color: var(--good); color: #fff; font-weight: 600; }
+.call-today { padding: 0 24px 6px; }
+.omr-wrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; box-shadow: var(--shadow); }
+.omr-dots { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.omr { display: inline-block; width: 14px; height: 14px; border-radius: 50%; vertical-align: middle; }
+.omr-green { background: var(--good); }
+.omr-red { background: var(--bad); }
+.omr-grey { background: #b8bbb0; }
+.omr-key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.omr-key .omr { width: 11px; height: 11px; margin-left: 8px; }
+.call-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.call-history ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+.call-history li { margin: 2px 0; }
 body[data-view="home"] .delivery-only { display: none; }
 
 .badge {

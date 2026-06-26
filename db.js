@@ -203,6 +203,16 @@ async function upsertNimbusShipment({ awb, orderNumber, status, raw }) {
     [ref, orderNumber || null, awb || null, String(status || ""), raw ? JSON.stringify(raw) : null]
   );
 }
+// A caller's attempts so far today (for the performance strip).
+async function callerDayAttempts(callerId) {
+  const r = await q(`SELECT outcome, at FROM call_attempts WHERE caller_id=$1 AND at >= date_trunc('day', now()) ORDER BY at`, [callerId]);
+  return r.rows;
+}
+// Recent NimbusPost webhook events (admin debug).
+async function recentNimbus(limit) {
+  const r = await q(`SELECT order_number, awb, status, updated_at FROM nimbus_shipments ORDER BY updated_at DESC LIMIT $1`, [limit || 50]);
+  return r.rows;
+}
 // Map order_number -> { status, awb } using the latest event per order.
 async function nimbusByOrder() {
   const r = await q(`SELECT DISTINCT ON (order_number) order_number, status, awb
@@ -219,5 +229,5 @@ module.exports = {
   saveOtp, getOtp, bumpOtpAttempts, clearOtp,
   createSession, getSession, deleteSession,
   logAttempt, attemptsByOrder, lockOrder, activeLocks, setAction, allActions,
-  upsertNimbusShipment, nimbusByOrder,
+  upsertNimbusShipment, nimbusByOrder, callerDayAttempts, recentNimbus,
 };

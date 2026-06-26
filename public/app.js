@@ -425,11 +425,25 @@
 
   /* ---------------- calling module ---------------- */
   const callState = { order: null };
+  function renderToday(myDay) {
+    const el = $("callToday");
+    if (!myDay || !myDay.length) { el.innerHTML = `<span class="muted small">No calls logged yet today.</span>`; return; }
+    const cls = (o) => o === "confirmed" ? "omr-green" : o === "cancelled" ? "omr-red" : "omr-grey";
+    let c = 0, x = 0, s = 0;
+    myDay.forEach((a) => { if (a.outcome === "confirmed") c++; else if (a.outcome === "cancelled") x++; else s++; });
+    el.innerHTML = `<div class="omr-wrap">
+      <span class="muted small">Your day · ${myDay.length} attempts</span>
+      <span class="omr-dots">${myDay.map((a) => `<span class="omr ${cls(a.outcome)}" title="${esc(a.outcome)} · ${new Date(a.at).toLocaleTimeString()}"></span>`).join("")}</span>
+      <span class="omr-key"><span class="omr omr-green"></span>${c} confirmed <span class="omr omr-red"></span>${x} cancelled <span class="omr omr-grey"></span>${s} skipped</span>
+    </div>`;
+  }
   async function renderCalling() {
+    $("callHeading").textContent = `Welcome ${(state.me && state.me.name) || ""}, — Order Confirmation Calling`;
     const wrap = $("callCard");
     wrap.innerHTML = `<div class="muted" style="padding:24px">Loading next order…</div>`;
     let d; try { d = await (await fetch("/api/calling/next")).json(); } catch { wrap.innerHTML = `<div class="muted" style="padding:24px">Could not load the queue.</div>`; return; }
     if (d.error) { wrap.innerHTML = `<div class="muted" style="padding:24px">${esc(d.error)}</div>`; return; }
+    renderToday(d.myDay);
     if (d.summary) $("callSummary").textContent = `${d.summary.due} due now · ${d.summary.eligible} COD orders in 4-day window · ${d.summary.attemptedToday} attempted today (need ${d.summary.required}/order by now)`;
     if (!d.order) { callState.order = null; wrap.innerHTML = `<div class="call-empty">✅ Nothing due right now. New orders or the next SLA window will appear here.</div>`; return; }
     callState.order = d.order;
@@ -452,6 +466,12 @@
               <tr><td>Discount</td><td></td><td class="num">-${fmtMoney(o.discount)}</td></tr>
               <tr class="total-row"><td>Total (COD)</td><td></td><td class="num">${fmtMoney(o.total)}</td></tr>
             </tfoot></table>
+          <div class="call-history">
+            <b>Call history (${(o.history || []).length})</b>
+            <ul>${(o.history && o.history.length)
+              ? o.history.map((h) => `<li>${new Date(h.at).toLocaleString()} — <b>${esc(h.caller || "—")}</b> — ${esc(h.outcome || "")}</li>`).join("")
+              : "<li class='muted'>No previous calls to this customer.</li>"}</ul>
+          </div>
         </div>
         <div class="call-actions">
           <button id="caCall" class="btn primary lg">📞 Call customer</button>

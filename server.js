@@ -628,12 +628,14 @@ async function shopifyREST(method, pathStr, body) {
   if (!res.ok) throw new Error(`Shopify ${method} ${pathStr} HTTP ${res.status} — ${await errBody(res)}`);
   return res.json().catch(() => ({}));
 }
-async function shopifyAddTag(id, tag, callerName) {
+// Add multiple separate tags to a Shopify order (de-duplicated).
+async function shopifyAddTags(id, tagList) {
   const order = (await shopifyREST("GET", `orders/${id}.json`)).order || {};
   const tags = (order.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
-  const stamp = callerName ? `${tag} by ${callerName}` : tag;
-  if (!tags.some((t) => t.toLowerCase() === tag.toLowerCase())) tags.push(tag);
-  if (callerName && !tags.some((t) => t.toLowerCase() === stamp.toLowerCase())) tags.push(stamp);
+  for (const t of tagList) {
+    const tag = String(t || "").trim();
+    if (tag && !tags.some((x) => x.toLowerCase() === tag.toLowerCase())) tags.push(tag);
+  }
   await shopifyREST("PUT", `orders/${id}.json`, { order: { id, tags: tags.join(", ") } });
 }
 async function shopifyCancelOrder(id) { return shopifyREST("POST", `orders/${id}/cancel.json`, {}); }
@@ -928,12 +930,18 @@ const server = http.createServer(async (req, res) => {
         const pool = (await callingPool()).map(String);
         const next = CallQueue.nextForCaller(orders, pool.length ? pool : [String(caller.id)], String(caller.id), now);
         const summary = CallQueue.summary(orders, now);
-        if (!next) return sendJson(res, 200, { order: null, summary });
+        const myDay = await db.callerDayAttempts(caller.id);
+        if (!next) return sendJson(res, 200, { order: null, summary, myDay });
         await db.lockOrder(next.orderNumber, caller.id, new Date(now + 5 * 60000).toISOString());
         const card = buildCallCard(byNum[next.orderNumber]._raw);
         card.attemptsToday = CallQueue.attemptsToday(next, now).length;
         card.required = CallQueue.requiredByNow(now);
-        return sendJson(res, 200, { order: card, summary });
+        card.history = (next.attempts || []).map((a) => ({ at: a.at, caller: a.caller, outcome: a.outcome }));
+        return sendJson(res, 200, { order: card, summary, myDay });
+      }
+      if (req.method === "GET" && pathname === "/api/calling/debug") {
+        if (!isAdmin) return sendJson(res, 403, { error: "Admin only" });
+        return sendJson(res, 200, { nimbus: await db.recentNimbus(50) });
       }
       const b = req.method === "POST" ? await readJson(req) : {};
       if (req.method === "POST" && pathname === "/api/calling/call") {
@@ -946,7 +954,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === "POST" && pathname === "/api/calling/confirm") {
-        try { await shopifyAddTag(b.orderId, "Verified", caller.name); }
+        try { await shopifyAddTags(b.orderId, ["Verified", caller.name]); }
         catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
         await db.setAction(b.orderNumber, "verified", caller.name);
         await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "confirmed" });
@@ -954,14 +962,14 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === "POST" && pathname === "/api/calling/cancel") {
         try { await shopifyCancelOrder(b.orderId); } catch (_) { /* may already be cancelled */ }
-        try { await shopifyAddTag(b.orderId, "Cancelled", caller.name); }
+        try { await shopifyAddTags(b.orderId, ["Cancelled", caller.name]); }
         catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
         await db.setAction(b.orderNumber, "cancelled", caller.name);
         await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "cancelled" });
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === "POST" && pathname === "/api/calling/address") {
-        try { await shopifyUpdateAddress(b.orderId, b.address || {}); }
+        try { await shopifyUpdateAddress(b.orderId, b.address || {}); await shopifyAddTags(b.orderId, ["Address Change", caller.name]); }
         catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
         await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "address_updated" });
         return sendJson(res, 200, { ok: true });
