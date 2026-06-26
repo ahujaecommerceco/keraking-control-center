@@ -464,7 +464,8 @@ function orderAwb(o) {
   return "";
 }
 
-function buildShipments(rawOrders, statusByAwb) {
+function buildShipments(rawOrders, statusByAwb, nimbusMap) {
+  nimbusMap = nimbusMap || {};
   const shipments = []; let idc = 0;
   for (const o of rawOrders) {
     const orderNumber = String(o.name || o.order_number || o.id || "").replace(/^#/, "");
@@ -472,6 +473,29 @@ function buildShipments(rawOrders, statusByAwb) {
     const risk = detectRisk(o);
     const amount = Number(o.total_price) || 0;
     const fulfillments = o.fulfillments || [];
+    const orderDateTop = toISO(o.created_at);
+    const stateTop = (o.shipping_address && (o.shipping_address.province || o.shipping_address.province_code)) || "";
+
+    // NimbusPost (webhook) is authoritative for shipment status. If it has a
+    // record for this order, use it and skip the Shopify-derived path.
+    const nb = nimbusMap[orderNumber];
+    if (nb && nb.status) {
+      const st = nb.status, awb = nb.awb || "";
+      const tracked = awb ? statusByAwb[awb] : null;
+      let attempts = (tracked && Number(tracked.attempts)) || 0;
+      if (attempts === 0 && /deliver|rto|return|undeliver|ndr|exception|out for delivery|attempt/i.test(st)) attempts = 1;
+      shipments.push({
+        id: "N" + idc++, orderNumber, awb,
+        courier: normalizeCourier((tracked && tracked.courier) || ""),
+        zone: (tracked && tracked.zone) || "", state: stateTop, attempts,
+        paymentType, risk, amount, status: st, dispatched: true,
+        ndrReason: (tracked && tracked.ndrReason) || "", ndrDate: "",
+        orderDate: orderDateTop, shipmentDate: orderDateTop,
+        pickupDate: tracked && tracked.pickupDate ? toISO(tracked.pickupDate) : "",
+        createdAt: tracked && tracked.pickupDate ? toISO(tracked.pickupDate) : orderDateTop,
+      });
+      continue;
+    }
     const orderDate = toISO(o.created_at);
     const state = (o.shipping_address && (o.shipping_address.province || o.shipping_address.province_code)) || "";
     const ff = String(o.fulfillment_status || "").toLowerCase();
@@ -746,8 +770,10 @@ async function handleData(reqBody) {
     errors.push("NimbusPost credentials not set — statuses come from Shopify only.");
   }
 
+  // NimbusPost webhook store is authoritative for shipment status (Shopify is fallback).
+  const nimbusMap = db.dbEnabled ? await db.nimbusByOrder().catch(() => ({})) : {};
   let shipments = null, orders = null;
-  if (rawOrders && rawOrders.length) { shipments = buildShipments(rawOrders, statusByAwb); orders = buildOrders(rawOrders); }
+  if (rawOrders && rawOrders.length) { shipments = buildShipments(rawOrders, statusByAwb, nimbusMap); orders = buildOrders(rawOrders); }
 
   let usedSample = false;
   if (!shipments || !shipments.length) { shipments = sample.shipments; orders = sample.orders; usedSample = true; }
