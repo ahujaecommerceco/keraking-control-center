@@ -477,8 +477,8 @@ function buildShipments(rawOrders, statusByAwb, nimbusMap) {
     const stateTop = (o.shipping_address && (o.shipping_address.province || o.shipping_address.province_code)) || "";
 
     // NimbusPost (webhook) is authoritative for shipment status. If it has a
-    // record for this order, use it and skip the Shopify-derived path.
-    const nb = nimbusMap[orderNumber];
+    // record for this order (matched on digits), use it and skip Shopify.
+    const nb = nimbusMap[ordKey(orderNumber)];
     if (nb && nb.status) {
       const st = nb.status, awb = nb.awb || "";
       const tracked = awb ? statusByAwb[awb] : null;
@@ -585,6 +585,8 @@ function resolveShopify() {
   return { shop: stored.shop || KK.shopifyShop, token: stored.accessToken || KK.shopifyToken };
 }
 function digits(s) { return String(s || "").replace(/[^\d+]/g, ""); }
+// Digits-only order key so "kk2468" (NimbusPost) and "#2468" (Shopify) match.
+function ordKey(s) { return String(s || "").replace(/[^0-9]/g, ""); }
 
 // Best-effort order source from UTM / referrer / channel.
 function parseSource(o) {
@@ -688,9 +690,10 @@ async function buildCallQueue() {
   const nimbus = await db.nimbusByOrder().catch(() => ({}));
   const cod = raw.filter((o) => {
     if (detectPayment(o) !== "cod") return false;
+    if (o.cancelled_at) return false;     // cancelled in Shopify
     const n = String(o.name || o.order_number || o.id).replace(/^#/, "");
-    if (nimbus[n]) return false;     // NimbusPost already has this shipment
-    if (isBooked(o)) return false;   // Shopify shows a shipment/AWB (fallback)
+    if (nimbus[ordKey(n)]) return false;  // NimbusPost has a shipment (any status — match on digits)
+    if (isBooked(o)) return false;        // Shopify shows a shipment/AWB (fallback)
     return true;
   });
   const nums = cod.map((o) => String(o.name || o.order_number || o.id).replace(/^#/, ""));
