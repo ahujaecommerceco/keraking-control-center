@@ -130,6 +130,46 @@ select:focus, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px 
 .call-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 .call-history ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
 .call-history li { margin: 2px 0; }
+
+/* RTO risk insight */
+.rto-box { margin-top: 14px; border-radius: 10px; padding: 10px 12px; border: 1px solid var(--line); }
+.rto-box.rto-low { background: rgba(46,160,67,.08); border-color: rgba(46,160,67,.35); }
+.rto-box.rto-medium { background: rgba(210,153,34,.10); border-color: rgba(210,153,34,.40); }
+.rto-box.rto-high { background: rgba(218,54,51,.10); border-color: rgba(218,54,51,.45); }
+.rto-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.rto-pill { font-weight: 700; font-size: 13px; }
+.rto-low .rto-pill { color: var(--good); } .rto-medium .rto-pill { color: #b9851a; } .rto-high .rto-pill { color: var(--bad); }
+
+/* Wrapped/looping note */
+.wrap-note { margin: 8px 0; padding: 7px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600; background: rgba(37,99,235,.10); color: #2563eb; border: 1px solid rgba(37,99,235,.3); }
+
+/* Pincode flag */
+.pin-flag { margin: 8px 0; padding: 8px 12px; border-radius: 8px; font-weight: 600; font-size: 13px; }
+.pin-flag.bad { background: rgba(218,54,51,.12); color: var(--bad); border: 1px solid rgba(218,54,51,.4); }
+
+/* Recorded-call line */
+.call-rec { margin: 8px 0; font-size: 13px; }
+.call-rec a { color: var(--accent, #2563eb); text-decoration: underline; }
+
+/* Customer order history */
+.cust-hist { margin-top: 12px; }
+.link-btn { background: none; border: none; color: var(--accent, #2563eb); cursor: pointer; font-size: 13px; padding: 4px 0; font-weight: 600; }
+.hist-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.hist-table th, .hist-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.hist-table td.num, .hist-table th.num { text-align: right; }
+.oc { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.oc-delivered { background: rgba(46,160,67,.15); color: var(--good); }
+.oc-rto { background: rgba(218,54,51,.15); color: var(--bad); }
+.oc-cancelled { background: rgba(120,120,120,.18); color: var(--muted); }
+.oc-in_transit { background: rgba(37,99,235,.15); color: #2563eb; }
+.oc-open { background: rgba(210,153,34,.15); color: #b9851a; }
+
+/* Skip form */
+.skip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.skip-grid .skip-note { grid-column: 1 / -1; }
+.skip-grid label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.btn.small { padding: 6px 10px; font-size: 12px; }
+.btn.ghost { background: transparent; }
 body[data-view="home"] .delivery-only { display: none; }
 
 .badge {
