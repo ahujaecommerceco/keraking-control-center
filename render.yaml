@@ -1,0 +1,38 @@
+# Render.com blueprint. Create the service from this repo; set the secret
+# values (sync:false) in the Render dashboard → Environment.
+services:
+  - type: web
+    name: keraking-control-center
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    autoDeploy: true
+    healthCheckPath: /login.html
+    envVars:
+      - key: APP_SECRET        # session signing secret (copy from your .env)
+        sync: false
+      - key: DATABASE_URL      # Neon connection string
+        sync: false
+      - key: RESEND_API_KEY    # re_…
+        sync: false
+      - key: RESEND_FROM       # KeraKing <otp@keraking.com>
+        sync: false
+      - key: ADMIN_EMAIL       # your admin login email
+        sync: false
+      - key: ADMIN_NAME
+        sync: false
+      - key: EXOTEL_SID
+        sync: false
+      - key: EXOTEL_KEY
+        sync: false
+      - key: EXOTEL_TOKEN
+        sync: false
+      - key: EXOTEL_CALLER_ID  # your ExoPhone
+        sync: false
+      - key: EXOTEL_SUBDOMAIN  # optional; set to api.in.exotel.com if needed
+        sync: false
+      - key: SHOPIFY_SHOP      # vuu0g7-c1.myshopify.com
+        sync: false
+      - key: SHOPIFY_TOKEN     # write-enabled shpat_… (from Connect Shopify)
+        sync: false
