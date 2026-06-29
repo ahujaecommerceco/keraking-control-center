@@ -428,13 +428,13 @@
   function renderToday(myDay) {
     const el = $("callToday");
     if (!myDay || !myDay.length) { el.innerHTML = `<span class="muted small">No calls logged yet today.</span>`; return; }
-    const cls = (o) => o === "confirmed" ? "omr-green" : o === "cancelled" ? "omr-red" : "omr-grey";
-    let c = 0, x = 0, s = 0;
-    myDay.forEach((a) => { if (a.outcome === "confirmed") c++; else if (a.outcome === "cancelled") x++; else s++; });
+    const cls = (o) => o === "confirmed" ? "omr-green" : o === "cancelled" ? "omr-red" : o === "called" ? "omr-call" : "omr-grey";
+    let c = 0, x = 0, k = 0, s = 0;
+    myDay.forEach((a) => { if (a.outcome === "confirmed") c++; else if (a.outcome === "cancelled") x++; else if (a.outcome === "called") k++; else s++; });
     el.innerHTML = `<div class="omr-wrap">
-      <span class="muted small">Your day · ${myDay.length} attempts</span>
+      <span class="muted small">Your day · ${k} dials</span>
       <span class="omr-dots">${myDay.map((a) => `<span class="omr ${cls(a.outcome)}" title="${esc(a.outcome)} · ${new Date(a.at).toLocaleTimeString()}"></span>`).join("")}</span>
-      <span class="omr-key"><span class="omr omr-green"></span>${c} confirmed <span class="omr omr-red"></span>${x} cancelled <span class="omr omr-grey"></span>${s} skipped</span>
+      <span class="omr-key"><span class="omr omr-call"></span>${k} dialled <span class="omr omr-green"></span>${c} confirmed <span class="omr omr-red"></span>${x} cancelled <span class="omr omr-grey"></span>${s} skipped</span>
     </div>`;
   }
   async function renderCalling() {
@@ -444,10 +444,51 @@
     let d; try { d = await (await fetch("/api/calling/next")).json(); } catch { wrap.innerHTML = `<div class="muted" style="padding:24px">Could not load the queue.</div>`; return; }
     if (d.error) { wrap.innerHTML = `<div class="muted" style="padding:24px">${esc(d.error)}</div>`; return; }
     renderToday(d.myDay);
-    if (d.summary) $("callSummary").textContent = `${d.summary.due} due now · ${d.summary.eligible} COD orders in 4-day window · ${d.summary.attemptedToday} attempted today (need ${d.summary.required}/order by now)${d.online ? ` · ${d.online} caller${d.online > 1 ? "s" : ""} online` : ""}`;
+    if (d.summary) $("callSummary").textContent = summaryText(d);
     if (!d.order) { callState.order = null; wrap.innerHTML = `<div class="call-empty">✅ Nothing due right now. New orders or the next SLA window will appear here.</div>`; return; }
     callState.order = d.order;
     renderCallCard(d.order);
+  }
+  function summaryText(d) {
+    const s = d.summary; if (!s) return "";
+    return `${s.due} due now · ${s.eligible} COD orders in 4-day window · ${s.attemptedToday} attempted today (need ${s.required}/order by now)${d.online ? ` · ${d.online} caller${d.online > 1 ? "s" : ""} online` : ""}`;
+  }
+  // Prev / Next (next due-by-SLA) / jump to a specific order ID.
+  async function navMove(dir) {
+    const o = callState.order;
+    const from = o ? encodeURIComponent(o.orderNumber) : "";
+    try { applyNav(await (await fetch(`/api/calling/nav?dir=${dir}&from=${from}`)).json()); }
+    catch { /* ignore */ }
+  }
+  async function navJump() {
+    const v = ($("navJumpId").value || "").trim();
+    if (!v) return;
+    try { applyNav(await (await fetch(`/api/calling/nav?dir=jump&to=${encodeURIComponent(v)}`)).json()); }
+    catch { /* ignore */ }
+  }
+  function flashCard(html, cls) {
+    const el = document.createElement("div");
+    el.className = "collision-flash" + (cls ? " " + cls : "");
+    el.innerHTML = html;
+    const host = $("callCard"); host.prepend(el);
+    setTimeout(() => el.remove(), 7000);
+  }
+  function applyNav(d) {
+    if (d.error) { alert(d.error); return; }
+    if (d.summary) $("callSummary").textContent = summaryText(d);
+    if (d.myDay) renderToday(d.myDay);
+    if (d.notFound) { flashCard("🚫 " + esc(d.message || "Order not found in the queue."), "warn"); return; }
+    if (d.order) {
+      callState.order = d.order;
+      renderCallCard(d.order);
+      if (d.collision) flashCard(`🔒 Order #${esc(d.collision.orderNumber)} is being handled by <b>${esc(d.collision.by)}</b> right now — you can't open it. Moved you to the next order.`);
+    } else if (d.collision) {
+      callState.order = null;
+      $("callCard").innerHTML = `<div class="call-empty">🔒 Order #${esc(d.collision.orderNumber)} is being handled by <b>${esc(d.collision.by)}</b>. Nothing else free right now.</div>`;
+    } else {
+      callState.order = null;
+      $("callCard").innerHTML = `<div class="call-empty">✅ Nothing else in the queue right now.</div>`;
+    }
   }
   const SKIP_REASONS = ["No answer / ringing", "Phone busy", "Switched off / unreachable",
     "Call later (schedule)", "Customer will confirm later", "Wrong / invalid number",
@@ -479,7 +520,15 @@
     const a = o.address;
     const items = o.items.map((it) => `<tr><td>${esc(it.title)}${it.variant ? " · " + esc(it.variant) : ""}</td><td class="num">${it.qty}</td><td class="num">${fmtMoney(it.price * it.qty)}</td></tr>`).join("");
     const hist = o.customerHistory || [];
+    const pos = o.position;
+    const posText = pos ? (pos.mode === "jumped" ? "jumped to order" : `${pos.index} of ${pos.total} ${pos.mode === "backlog" ? "in backlog" : "due"}`) : "";
     $("callCard").innerHTML = `
+      <div class="call-nav">
+        <button id="navPrev" class="btn small">◀ Prev</button>
+        <button id="navNext" class="btn small">Next ▶</button>
+        <span class="nav-pos muted small">${esc(posText)}</span>
+        <span class="nav-jump"><input id="navJumpId" class="input" placeholder="Go to order #" inputmode="numeric"><button id="navJumpGo" class="btn small">Go</button></span>
+      </div>
       <div class="call-card">
         <div class="call-main">
           <div class="call-head"><h2>${esc(o.customer)}</h2><span class="risk-label ${o.risk}">${(o.risk || "").replace("_", " ")}</span><span class="tag-cod">COD</span></div>
@@ -530,6 +579,10 @@
     $("caCancel").addEventListener("click", cancelOrder);
     $("caAddr").addEventListener("click", toggleAddrForm);
     $("caPin").addEventListener("click", togglePincode);
+    $("navPrev").addEventListener("click", () => navMove("prev"));
+    $("navNext").addEventListener("click", () => navMove("next"));
+    $("navJumpGo").addEventListener("click", navJump);
+    $("navJumpId").addEventListener("keydown", (e) => { if (e.key === "Enter") navJump(); });
     $("caHistToggle").addEventListener("click", () => {
       const b = $("caHistBody"), t = $("caHistToggle");
       const open = b.classList.toggle("hidden") === false;

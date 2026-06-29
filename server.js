@@ -48,6 +48,8 @@ const SHOPIFY_API_VERSION = "2024-04";
 const SHOPIFY_SCOPES = "read_orders,write_orders,read_products,read_fulfillments";
 const UA = "DeliveryIntelligenceDashboard/1.0";
 const REDIRECT_URI = `http://localhost:${PORT}/auth/callback`; // local default; hosted derives from request
+// Public base URL (for Exotel call-status callbacks). Set PUBLIC_BASE in prod.
+const PUBLIC_BASE = (process.env.PUBLIC_BASE || "https://keraking-control-center.onrender.com").replace(/\/$/, "");
 
 // Optional password lock for public hosting (HTTP Basic Auth). If unset (local
 // use), no auth is required.
@@ -653,12 +655,19 @@ async function exotelConnect(agentPhone, customerPhone) {
   if (!agentPhone) throw new Error("Your account has no phone number — ask an admin to add it.");
   if (!customerPhone) throw new Error("This order has no customer phone number.");
   const auth64 = Buffer.from(`${key}:${token}`).toString("base64");
-  const body = new URLSearchParams({ From: agentPhone, To: customerPhone, CallerId: callerId, CallType: "trans", TimeLimit: "1800" });
+  const body = new URLSearchParams({
+    From: agentPhone, To: customerPhone, CallerId: callerId, CallType: "trans", TimeLimit: "1800",
+    Record: "true",                                         // record the conversation
+    StatusCallback: `${PUBLIC_BASE}/webhooks/exotel`,       // Exotel posts recording + duration here
+    StatusCallbackEvents: "terminal",
+  });
   const res = await fetch(`https://${sub}/v1/Accounts/${sid}/Calls/connect.json`, {
     method: "POST", headers: { Authorization: `Basic ${auth64}`, "Content-Type": "application/x-www-form-urlencoded" }, body,
   });
   if (!res.ok) throw new Error(`Exotel HTTP ${res.status} — ${await errBody(res)}`);
-  return res.json().catch(() => ({}));
+  const data = await res.json().catch(() => ({}));
+  const call = data.Call || data.call || {};
+  return { sid: call.Sid || call.sid || "", status: call.Status || "", raw: data };
 }
 
 // The pool of caller accounts to auto-assign across (active + has calling access).
@@ -675,6 +684,96 @@ function isBooked(o) {
   if (ff === "fulfilled" || ff === "partial") return true;
   if (orderAwb(o)) return true;
   return false;
+}
+
+// Coarse outcome of a past order, from NimbusPost (preferred) then Shopify.
+function outcomeOf(o, nimbusMap) {
+  const n = ordKey(o.name || o.order_number || o.id);
+  const txt = (nimbusMap[n] && String(nimbusMap[n].status || "").toLowerCase()) || "";
+  if (/rto|return/.test(txt)) return "rto";
+  if (/deliver/.test(txt)) return "delivered";
+  if (/cancel/.test(txt)) return "cancelled";
+  if (/transit|out for delivery|dispatch|pickup|picked|shipped|booked|spd|ofd/.test(txt)) return "in_transit";
+  if (o.cancelled_at) return "cancelled";
+  const ff = String(o.fulfillment_status || "").toLowerCase();
+  if (ff === "fulfilled" || ff === "partial") return "in_transit";
+  return "open";
+}
+// The customer's full order history (newest first), each with its outcome.
+async function customerHistory(o, nimbusMap) {
+  const cust = o.customer || {};
+  const email = o.email || cust.email || "";
+  let past = [];
+  try {
+    if (cust.id) past = (await shopifyREST("GET", `customers/${cust.id}/orders.json?status=any&limit=50`)).orders || [];
+    else if (email) past = (await shopifyREST("GET", `orders.json?status=any&limit=50&email=${encodeURIComponent(email)}`)).orders || [];
+  } catch (_) { past = []; }
+  return past.map((p) => ({
+    orderNumber: String(p.name || p.order_number || p.id).replace(/^#/, ""),
+    at: p.created_at, total: Number(p.total_price) || 0,
+    payment: detectPayment(p), outcome: outcomeOf(p, nimbusMap),
+  })).sort((a, b) => new Date(b.at) - new Date(a.at));
+}
+// RTO-risk heuristic from prior delivered/RTO record + Shopify fraud + pincode.
+function rtoRisk(history, currentNumber, shopRisk, pinFlag) {
+  const prior = history.filter((h) => h.orderNumber !== currentNumber);
+  const delivered = prior.filter((h) => h.outcome === "delivered").length;
+  const rto = prior.filter((h) => h.outcome === "rto").length;
+  const cancelled = prior.filter((h) => h.outcome === "cancelled").length;
+  const completed = delivered + rto;
+  const rate = completed ? rto / completed : 0;
+  const reasons = [];
+  let level = "low";
+  if (rto >= 2 || (completed >= 2 && rate >= 0.5)) { level = "high"; reasons.push(`${rto} past RTO${rto > 1 ? "s" : ""} of ${completed} delivered`); }
+  else if (rto === 1) { level = "medium"; reasons.push("1 past RTO"); }
+  if (delivered >= 2 && rto === 0) reasons.push(`${delivered} clean past deliveries`);
+  if (!prior.length) reasons.push("first-time customer (no history)");
+  if (cancelled >= 2) { reasons.push(`${cancelled} past cancellations`); if (level === "low") level = "medium"; }
+  if (shopRisk === "high" || shopRisk === "very_high") { reasons.push("Shopify flags high fraud risk"); level = "high"; }
+  if (pinFlag && pinFlag.serviceable === false) { reasons.push("pincode marked non-serviceable"); level = "high"; }
+  if (!reasons.length) reasons.push("no risk signals");
+  return { level, reasons, stats: { delivered, rto, cancelled, orders: prior.length } };
+}
+
+// Build the full card payload (items, history, pincode flag, RTO, last call).
+async function enrichCard(chosen, raw, nimbus, now) {
+  const card = buildCallCard(raw);
+  card.attemptsToday = CallQueue.attemptsToday(chosen, now).length;   // dials today
+  card.required = CallQueue.requiredByNow(now);
+  card.history = (chosen.allAttempts || chosen.attempts || []).map((a) => ({ at: a.at, caller: a.caller, outcome: a.outcome }));
+  const pinFlag = await db.getPincode(card.address.zip).catch(() => null);
+  card.pincode = { value: String(card.address.zip || "").replace(/\D/g, ""),
+    serviceable: pinFlag ? pinFlag.serviceable : null, note: pinFlag ? pinFlag.note : "" };
+  const history = await customerHistory(raw, nimbus || {});
+  card.customerHistory = history;
+  card.rto = rtoRisk(history, card.orderNumber, card.risk, pinFlag);
+  card.callInfo = await db.latestCallForOrder(card.orderNumber).catch(() => null);
+  return card;
+}
+// The active calling series: orders DUE by the SLA cadence (oldest first). If the
+// SLA is fully satisfied, fall back to the backlog (oldest, least-dialled first)
+// so callers loop back instead of going idle.
+function queueSeries(orders, now) {
+  const due = CallQueue.dueOrders(orders, now);
+  if (due.length) return { list: due, wrapped: false };
+  const at = (o) => CallQueue.attemptsToday(o, now).length;
+  const backlog = orders.filter((o) => CallQueue.eligible(o, now) && !o.callback)
+    .sort((a, b) => (at(a) - at(b)) || (new Date(a.createdAt) - new Date(b.createdAt)));
+  return { list: backlog, wrapped: true };
+}
+// Walk a series from `fromNum` in a direction, wrapping around (for Prev/Next).
+function navOrder(dir, list, fromNum) {
+  const n = list.length, out = [];
+  if (!n) return out;
+  const idx = list.findIndex((o) => o.orderNumber === fromNum);
+  if (dir === "prev") {
+    const start = idx >= 0 ? idx - 1 : n - 1;
+    for (let k = 0; k < n; k++) out.push(list[((start - k) % n + n) % n]);
+  } else {
+    const start = idx >= 0 ? idx + 1 : 0;
+    for (let k = 0; k < n; k++) out.push(list[(start + k) % n]);
+  }
+  return out;
 }
 
 // Assemble the live queue: COD orders (last 4d) that are NOT yet booked,
@@ -697,16 +796,23 @@ async function buildCallQueue() {
     return true;
   });
   const nums = cod.map((o) => String(o.name || o.order_number || o.id).replace(/^#/, ""));
-  const [attempts, actions, locks] = await Promise.all([db.attemptsByOrder(nums), db.allActions(), db.activeLocks()]);
+  const [attempts, actions, locks, callbacks] = await Promise.all([
+    db.attemptsByOrder(nums), db.allActions(), db.activeLocks(), db.pendingCallbacks().catch(() => ({})),
+  ]);
   const lockMap = {}; locks.forEach((l) => (lockMap[l.order_number] = l));
   const orders = cod.map((o) => {
     const n = String(o.name || o.order_number || o.id).replace(/^#/, "");
     const lk = lockMap[n];
+    const all = attempts[n] || [];
+    // SLA cadence counts actual DIALS only (outcome "called"); skips/confirms/etc
+    // are dispositions, kept in allAttempts for history but not toward the SLA.
+    const dials = all.filter((a) => a.outcome === "called");
     return { orderNumber: n, createdAt: o.created_at, paymentType: "cod", actioned: !!actions[n],
-      attempts: attempts[n] || [], lockedBy: lk ? lk.caller_id : null, lockUntil: lk ? lk.locked_until : null, _raw: o };
+      attempts: dials, allAttempts: all, lockedBy: lk ? lk.caller_id : null, lockUntil: lk ? lk.locked_until : null,
+      callback: callbacks[n] || null, _raw: o };
   });
   const byNum = {}; orders.forEach((o) => (byNum[o.orderNumber] = o));
-  return { orders, byNum };
+  return { orders, byNum, nimbus, callbacks };
 }
 
 /* ------------------------------------------------------------------ *
@@ -859,7 +965,19 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { authRequired: db.dbEnabled, user: publicUser(u) });
     }
     // Exotel posts call status here (public — Exotel can't carry a session).
-    if (pathname === "/webhooks/exotel") { try { await readJson(req); } catch (_) {} res.writeHead(200); return res.end("ok"); }
+    // It sends CallSid + Status + RecordingUrl + duration once the call ends.
+    if (pathname === "/webhooks/exotel") {
+      let p = {};
+      try { p = await readBody(req); } catch (_) {}
+      try {
+        const callSid = String(p.CallSid || p.callsid || p.Sid || p.sid || "").trim();
+        const status = String(p.Status || p.DialCallStatus || p.status || "").trim();
+        const recordingUrl = String(p.RecordingUrl || p.recording_url || p.RecordingUri || "").trim();
+        const duration = p.ConversationDuration || p.Duration || p.DialCallDuration || p.duration || null;
+        if (callSid && db.dbEnabled) await db.updateCallLog({ callSid, status, recordingUrl, duration });
+      } catch (_) {}
+      res.writeHead(200); return res.end("ok");
+    }
     // NimbusPost pushes shipment/AWB/status events here (public).
     if (pathname === "/webhooks/nimbus") {
       let p = {};
@@ -929,37 +1047,108 @@ const server = http.createServer(async (req, res) => {
       const now = Date.now();
 
       if (req.method === "GET" && pathname === "/api/calling/next") {
-        const { orders, byNum } = await buildCallQueue();
-        const pool = (await callingPool()).map(String);
-        const next = CallQueue.nextForCaller(orders, pool.length ? pool : [String(caller.id)], String(caller.id), now);
+        const { orders, byNum, nimbus } = await buildCallQueue();
         const summary = CallQueue.summary(orders, now);
-        const myDay = await db.callerDayAttempts(caller.id);
-        if (!next) return sendJson(res, 200, { order: null, summary, myDay });
-        await db.lockOrder(next.orderNumber, caller.id, new Date(now + 5 * 60000).toISOString());
-        const card = buildCallCard(byNum[next.orderNumber]._raw);
-        card.attemptsToday = CallQueue.attemptsToday(next, now).length;
-        card.required = CallQueue.requiredByNow(now);
-        card.history = (next.attempts || []).map((a) => ({ at: a.at, caller: a.caller, outcome: a.outcome }));
-        return sendJson(res, 200, { order: card, summary, myDay });
+        const [myDay, online] = await Promise.all([db.callerDayAttempts(caller.id), db.onlineCallers().catch(() => 0)]);
+        // Pull-based distribution: every active caller draws from one shared
+        // queue, oldest order first. The atomic claim guarantees no two callers
+        // are ever shown the same order — works for a team of 1 or 20, and the
+        // pool self-balances as people join/leave. Hold at most one order each.
+        await db.releaseCallerLocks(caller.id);
+        const lease = new Date(now + 5 * 60000).toISOString();
+        const series = queueSeries(orders, now);
+        let chosen = null;
+        for (const o of series.list) {
+          if (await db.claimOrder(o.orderNumber, caller.id, lease)) { chosen = o; break; }
+        }
+        if (!chosen) return sendJson(res, 200, { order: null, summary, myDay, online });
+        const card = await enrichCard(chosen, byNum[chosen.orderNumber]._raw, nimbus, now);
+        card.wrapped = series.wrapped;
+        const idx = series.list.findIndex((o) => o.orderNumber === chosen.orderNumber);
+        card.position = { index: idx + 1, total: series.list.length, mode: series.wrapped ? "backlog" : "due" };
+        return sendJson(res, 200, { order: card, summary, myDay, online, wrapped: series.wrapped });
+      }
+      // Manual navigation: Prev / Next (within the due-by-SLA series) and jump to
+      // a specific order ID. If the target is held by another caller, return a
+      // collision and auto-advance to the next free order.
+      if (req.method === "GET" && pathname === "/api/calling/nav") {
+        const dir = (urlObj.searchParams.get("dir") || "next").toLowerCase();
+        const from = String(urlObj.searchParams.get("from") || "").replace(/^#/, "");
+        const toRaw = urlObj.searchParams.get("to") || "";
+        const { orders, byNum, nimbus } = await buildCallQueue();
+        const summary = CallQueue.summary(orders, now);
+        const [myDay, online, users] = await Promise.all([
+          db.callerDayAttempts(caller.id), db.onlineCallers().catch(() => 0), db.listUsers().catch(() => []),
+        ]);
+        const nameById = {}; users.forEach((u) => (nameById[u.id] = u.name || u.email));
+        const series = queueSeries(orders, now);
+        const list = series.list;
+        const lease = new Date(now + 5 * 60000).toISOString();
+        const byDigits = {}; orders.forEach((o) => (byDigits[ordKey(o.orderNumber)] = o));
+        await db.releaseCallerLocks(caller.id);
+        let chosen = null, collision = null;
+        if (dir === "jump") {
+          const tgt = byDigits[ordKey(toRaw)];
+          if (!tgt) return sendJson(res, 200, { ok: true, notFound: true, summary, myDay, online,
+            message: `Order #${String(toRaw).replace(/[^0-9]/g, "")} isn't in the calling queue — it may be non-COD, already booked/cancelled/confirmed, or outside the 4-day window.` });
+          if (await db.claimOrder(tgt.orderNumber, caller.id, lease)) chosen = tgt;
+          else {
+            collision = { orderNumber: tgt.orderNumber, by: nameById[tgt.lockedBy] || "another caller" };
+            for (const o of navOrder("next", list, tgt.orderNumber)) {
+              if (await db.claimOrder(o.orderNumber, caller.id, lease)) { chosen = o; break; }
+            }
+          }
+        } else {
+          for (const o of navOrder(dir, list, from)) {
+            if (await db.claimOrder(o.orderNumber, caller.id, lease)) { chosen = o; break; }
+          }
+        }
+        if (!chosen) return sendJson(res, 200, { ok: true, order: null, collision, summary, myDay, online, wrapped: series.wrapped });
+        const card = await enrichCard(chosen, byNum[chosen.orderNumber]._raw, nimbus, now);
+        card.wrapped = series.wrapped;
+        const idx = list.findIndex((o) => o.orderNumber === chosen.orderNumber);
+        card.position = idx >= 0 ? { index: idx + 1, total: list.length, mode: series.wrapped ? "backlog" : "due" }
+                                 : { index: null, total: list.length, mode: "jumped" };
+        return sendJson(res, 200, { ok: true, order: card, collision, summary, myDay, online, wrapped: series.wrapped });
       }
       if (req.method === "GET" && pathname === "/api/calling/debug") {
         if (!isAdmin) return sendJson(res, 403, { error: "Admin only" });
         return sendJson(res, 200, { nimbus: await db.recentNimbus(50) });
       }
+      // Latest recorded call for an order (polled after a call ends).
+      if (req.method === "GET" && pathname === "/api/calling/callinfo") {
+        const orderNumber = urlObj.searchParams.get("orderNumber") || "";
+        return sendJson(res, 200, { ok: true, call: await db.latestCallForOrder(orderNumber).catch(() => null) });
+      }
       const b = req.method === "POST" ? await readJson(req) : {};
       if (req.method === "POST" && pathname === "/api/calling/call") {
-        try { return sendJson(res, 200, { ok: true, call: await exotelConnect(digits(caller.phone), digits(b.phone)) }); }
-        catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
+        try {
+          const call = await exotelConnect(digits(caller.phone), digits(b.phone));
+          if (call.sid) await db.startCallLog({ callSid: call.sid, orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name });
+          // A dial = one SLA attempt (counts toward the 1-by-noon / 2-by-3pm / 3-by-6pm cadence).
+          if (b.orderNumber) await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "called" });
+          // Keep the order leased to this caller while the call is live.
+          if (b.orderNumber) await db.claimOrder(b.orderNumber, caller.id, new Date(now + 10 * 60000).toISOString());
+          return sendJson(res, 200, { ok: true, recorded: true, sid: call.sid, call });
+        } catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
       }
       if (req.method === "POST" && pathname === "/api/calling/skip") {
-        await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "no_answer", notes: b.notes });
-        await db.lockOrder(b.orderNumber, null, new Date(now - 1000).toISOString());
+        const reason = String(b.reason || "No answer").slice(0, 120);
+        const note = String(b.note || "").slice(0, 300);
+        await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "skipped", notes: note ? `${reason} — ${note}` : reason });
+        // "Call later": hide the order until the chosen date/time.
+        if (b.callbackAt) {
+          const t = new Date(b.callbackAt);
+          if (!isNaN(t)) await db.setCallback(b.orderNumber, t.toISOString(), reason, note, caller.name);
+        }
+        await db.releaseCallerLocks(caller.id, null); // free it for the pool
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === "POST" && pathname === "/api/calling/confirm") {
         try { await shopifyAddTags(b.orderId, ["Verified", caller.name]); }
         catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
         await db.setAction(b.orderNumber, "verified", caller.name);
+        await db.clearCallback(b.orderNumber).catch(() => {});
         await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "confirmed" });
         return sendJson(res, 200, { ok: true });
       }
@@ -968,6 +1157,7 @@ const server = http.createServer(async (req, res) => {
         try { await shopifyAddTags(b.orderId, ["Cancelled", caller.name]); }
         catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
         await db.setAction(b.orderNumber, "cancelled", caller.name);
+        await db.clearCallback(b.orderNumber).catch(() => {});
         await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "cancelled" });
         return sendJson(res, 200, { ok: true });
       }
@@ -976,6 +1166,14 @@ const server = http.createServer(async (req, res) => {
         catch (e) { return sendJson(res, 200, { ok: false, error: e.message }); }
         await db.logAttempt({ orderNumber: b.orderNumber, callerId: caller.id, callerName: caller.name, outcome: "address_updated" });
         return sendJson(res, 200, { ok: true });
+      }
+      // Save / clear a pincode's serviceability. Future orders on it auto-flag.
+      if (req.method === "POST" && pathname === "/api/calling/pincode") {
+        const row = await db.setPincode(b.pincode, b.serviceable !== false, b.note || "", caller.name);
+        return sendJson(res, 200, { ok: true, pincode: row });
+      }
+      if (req.method === "GET" && pathname === "/api/calling/pincodes") {
+        return sendJson(res, 200, { ok: true, pincodes: await db.listNonServiceable().catch(() => []) });
       }
     }
     if (req.method === "POST" && pathname === "/auth/start") {

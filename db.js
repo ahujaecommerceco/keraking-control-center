@@ -87,6 +87,36 @@ async function init() {
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await q(`CREATE INDEX IF NOT EXISTS nimbus_order_idx ON nimbus_shipments(order_number)`);
+  // Scheduled callbacks ("call later") — order hidden from the queue until callback_at.
+  await q(`CREATE TABLE IF NOT EXISTS order_callbacks (
+    order_number  TEXT PRIMARY KEY,
+    callback_at   TIMESTAMPTZ NOT NULL,
+    reason        TEXT NOT NULL DEFAULT '',
+    note          TEXT NOT NULL DEFAULT '',
+    caller_name   TEXT NOT NULL DEFAULT '',
+    at            TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  // Exotel call records (recording + duration captured from the status webhook).
+  await q(`CREATE TABLE IF NOT EXISTS call_logs (
+    call_sid       TEXT PRIMARY KEY,
+    order_number   TEXT,
+    caller_id      BIGINT,
+    caller_name    TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT '',
+    recording_url  TEXT NOT NULL DEFAULT '',
+    duration       INT NOT NULL DEFAULT 0,
+    started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS call_logs_order_idx ON call_logs(order_number)`);
+  // Pincode serviceability list (caller/admin-maintained). serviceable=false flags an order.
+  await q(`CREATE TABLE IF NOT EXISTS pincodes (
+    pincode      TEXT PRIMARY KEY,
+    serviceable  BOOLEAN NOT NULL DEFAULT TRUE,
+    note         TEXT NOT NULL DEFAULT '',
+    updated_by   TEXT NOT NULL DEFAULT '',
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
 
   // Seed the admin from env ADMIN_EMAIL (full access). Safe to run repeatedly.
   const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
@@ -176,9 +206,33 @@ async function lockOrder(orderNumber, callerId, untilISO) {
   await q(`INSERT INTO order_locks (order_number,caller_id,locked_until) VALUES ($1,$2,$3)
            ON CONFLICT (order_number) DO UPDATE SET caller_id=$2, locked_until=$3`, [orderNumber, callerId || null, untilISO]);
 }
+// Atomically claim an order for a caller. Succeeds only if it is free, the lock
+// has expired, or it is already this caller's. This is the guarantee that two
+// callers can never be shown the same order, at any team size.
+async function claimOrder(orderNumber, callerId, untilISO) {
+  const r = await q(
+    `INSERT INTO order_locks (order_number, caller_id, locked_until)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (order_number) DO UPDATE SET caller_id=$2, locked_until=$3
+       WHERE order_locks.locked_until < now() OR order_locks.caller_id = $2
+     RETURNING order_number`,
+    [orderNumber, callerId || null, untilISO]
+  );
+  return r.rowCount > 0;
+}
+// Release every order this caller is holding (except an optional one to keep),
+// so each caller holds at most one live order.
+async function releaseCallerLocks(callerId, exceptOrder) {
+  await q(`DELETE FROM order_locks WHERE caller_id=$1 AND order_number <> COALESCE($2,'')`, [callerId, exceptOrder || null]);
+}
 async function activeLocks() {
   const r = await q(`SELECT order_number, caller_id, locked_until FROM order_locks WHERE locked_until > now()`);
   return r.rows;
+}
+// How many distinct callers are actively holding an order right now (team-online gauge).
+async function onlineCallers() {
+  const r = await q(`SELECT COUNT(DISTINCT caller_id) AS n FROM order_locks WHERE locked_until > now() AND caller_id IS NOT NULL`);
+  return Number(r.rows[0] && r.rows[0].n) || 0;
 }
 async function setAction(orderNumber, status, callerName) {
   await q(`INSERT INTO order_actions (order_number,status,caller_name) VALUES ($1,$2,$3)
@@ -228,11 +282,77 @@ async function nimbusByOrder() {
   return map;
 }
 
+/* ---- callbacks ("call later") ---- */
+async function setCallback(orderNumber, callbackAtISO, reason, note, callerName) {
+  await q(`INSERT INTO order_callbacks (order_number, callback_at, reason, note, caller_name)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (order_number) DO UPDATE SET callback_at=$2, reason=$3, note=$4, caller_name=$5, at=now()`,
+    [orderNumber, callbackAtISO, reason || "", note || "", callerName || ""]);
+}
+async function clearCallback(orderNumber) { await q(`DELETE FROM order_callbacks WHERE order_number=$1`, [orderNumber]); }
+// Orders whose callback time is still in the future → keep them out of the queue.
+async function pendingCallbacks() {
+  const r = await q(`SELECT order_number, callback_at, reason, caller_name FROM order_callbacks WHERE callback_at > now()`);
+  const map = {};
+  for (const row of r.rows) map[row.order_number] = { at: row.callback_at, reason: row.reason, caller: row.caller_name };
+  return map;
+}
+
+/* ---- call logs (recording + duration) ---- */
+async function startCallLog({ callSid, orderNumber, callerId, callerName }) {
+  if (!callSid) return;
+  await q(`INSERT INTO call_logs (call_sid, order_number, caller_id, caller_name, status)
+           VALUES ($1,$2,$3,$4,'initiated')
+           ON CONFLICT (call_sid) DO NOTHING`,
+    [callSid, orderNumber || null, callerId || null, callerName || ""]);
+}
+async function updateCallLog({ callSid, status, recordingUrl, duration }) {
+  if (!callSid) return;
+  await q(`UPDATE call_logs SET
+             status=COALESCE($2,status),
+             recording_url=COALESCE(NULLIF($3,''),recording_url),
+             duration=COALESCE($4,duration),
+             updated_at=now()
+           WHERE call_sid=$1`,
+    [callSid, status || null, recordingUrl || "", (duration === undefined || duration === null) ? null : Number(duration) || 0]);
+}
+// Latest call for an order (for the card's "recorded · duration · link" line).
+async function latestCallForOrder(orderNumber) {
+  const r = await q(`SELECT call_sid, status, recording_url, duration, caller_name, started_at
+                     FROM call_logs WHERE order_number=$1 ORDER BY started_at DESC LIMIT 1`, [orderNumber]);
+  return r.rows[0] || null;
+}
+
+/* ---- pincode serviceability ---- */
+async function getPincode(pin) {
+  const p = String(pin || "").replace(/\D/g, "");
+  if (!p) return null;
+  const r = await q(`SELECT pincode, serviceable, note FROM pincodes WHERE pincode=$1`, [p]);
+  return r.rows[0] || null;
+}
+async function setPincode(pin, serviceable, note, by) {
+  const p = String(pin || "").replace(/\D/g, "");
+  if (!p) return null;
+  const r = await q(`INSERT INTO pincodes (pincode, serviceable, note, updated_by, updated_at)
+                     VALUES ($1,$2,$3,$4, now())
+                     ON CONFLICT (pincode) DO UPDATE SET serviceable=$2, note=$3, updated_by=$4, updated_at=now()
+                     RETURNING pincode, serviceable, note`, [p, serviceable !== false, note || "", by || ""]);
+  return r.rows[0];
+}
+async function listNonServiceable() {
+  const r = await q(`SELECT pincode, note, updated_by, updated_at FROM pincodes WHERE serviceable=FALSE ORDER BY updated_at DESC`);
+  return r.rows;
+}
+
 module.exports = {
   dbEnabled, MODULES, init, q,
   getUserByEmail, getUserById, listUsers, createUser, updateUser,
   saveOtp, getOtp, bumpOtpAttempts, clearOtp,
   createSession, getSession, deleteSession,
-  logAttempt, attemptsByOrder, lockOrder, activeLocks, setAction, allActions,
+  logAttempt, attemptsByOrder, lockOrder, claimOrder, releaseCallerLocks, activeLocks, onlineCallers,
+  setAction, allActions,
   upsertNimbusShipment, nimbusByOrder, callerDayAttempts, recentNimbus,
+  setCallback, clearCallback, pendingCallbacks,
+  startCallLog, updateCallLog, latestCallForOrder,
+  getPincode, setPincode, listNonServiceable,
 };
