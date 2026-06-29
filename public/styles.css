@@ -141,6 +141,27 @@ select:focus, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px 
 .rto-pill { font-weight: 700; font-size: 13px; }
 .rto-low .rto-pill { color: var(--good); } .rto-medium .rto-pill { color: #b9851a; } .rto-high .rto-pill { color: var(--bad); }
 
+/* Loading spinner */
+.loading-box { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 48px 24px; }
+.spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent, #2563eb); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Queue navigator panel */
+.queue-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-start; justify-content: center; z-index: 1000; padding: 40px 16px; overflow: auto; }
+.queue-modal { background: var(--panel, #fff); color: var(--text); width: min(960px, 100%); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.3); overflow: hidden; }
+.queue-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel, #fff); }
+.queue-head h3 { margin: 0; font-size: 16px; }
+#qlBody { max-height: 70vh; overflow: auto; }
+.ql-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ql-table th, .ql-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ql-table tbody tr:hover { background: rgba(37,99,235,.05); }
+.ql-busy { color: var(--bad); font-weight: 600; }
+.avail { color: var(--good); font-weight: 600; }
+.cust-cell { position: relative; cursor: default; }
+.cust-tip { display: none; position: absolute; left: 0; top: 100%; z-index: 5; background: var(--panel, #fff); border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); border-radius: 8px; padding: 8px 11px; font-size: 12.5px; min-width: 220px; white-space: normal; }
+.cust-cell:hover .cust-tip { display: block; }
+
 /* Calling navigation bar */
 .call-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .call-nav .nav-pos { margin: 0 4px; }

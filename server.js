@@ -1115,6 +1115,26 @@ const server = http.createServer(async (req, res) => {
         if (!isAdmin) return sendJson(res, 403, { error: "Admin only" });
         return sendJson(res, 200, { nimbus: await db.recentNimbus(50) });
       }
+      // Full list of orders due for calling (for the queue navigator panel).
+      if (req.method === "GET" && pathname === "/api/calling/list") {
+        const { orders, byNum } = await buildCallQueue();
+        const users = await db.listUsers().catch(() => []);
+        const nameById = {}; users.forEach((u) => (nameById[u.id] = u.name || u.email));
+        const series = queueSeries(orders, now);
+        const rows = series.list.map((o) => {
+          const raw = byNum[o.orderNumber]._raw;
+          const sa = raw.shipping_address || {}, cust = raw.customer || {};
+          const name = sa.name || [cust.first_name, cust.last_name].filter(Boolean).join(" ") || "Customer";
+          const phone = digits(sa.phone || raw.phone || cust.phone || "");
+          const items = (raw.line_items || []).map((li) => ({ title: li.title, variant: li.variant_title || "", qty: li.quantity }));
+          const address = [sa.address1, sa.address2, sa.city, sa.province, sa.zip].filter(Boolean).join(", ");
+          const locked = o.lockedBy && o.lockUntil && new Date(o.lockUntil).getTime() > now;
+          const busyWith = locked && String(o.lockedBy) !== String(caller.id) ? (nameById[o.lockedBy] || "another caller") : null;
+          return { orderNumber: o.orderNumber, orderDate: raw.created_at, items, payment: detectPayment(raw),
+            customer: name, phone, address, attemptsToday: CallQueue.attemptsToday(o, now).length, busyWith };
+        });
+        return sendJson(res, 200, { ok: true, rows, total: rows.length, mode: series.wrapped ? "backlog" : "due" });
+      }
       // Latest recorded call for an order (polled after a call ends).
       if (req.method === "GET" && pathname === "/api/calling/callinfo") {
         const orderNumber = urlObj.searchParams.get("orderNumber") || "";

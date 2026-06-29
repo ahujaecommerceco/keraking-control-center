@@ -437,10 +437,14 @@
       <span class="omr-key"><span class="omr omr-call"></span>${k} dialled <span class="omr omr-green"></span>${c} confirmed <span class="omr omr-red"></span>${x} cancelled <span class="omr omr-grey"></span>${s} skipped</span>
     </div>`;
   }
+  function spinnerHTML(msg) {
+    return `<div class="loading-box"><div class="spinner"></div><div class="muted">${esc(msg || "Loading…")}</div></div>`;
+  }
+  function loadingCard(msg) { $("callCard").innerHTML = spinnerHTML(msg); }
   async function renderCalling() {
     $("callHeading").textContent = `Welcome ${(state.me && state.me.name) || ""}, — Order Confirmation Calling`;
     const wrap = $("callCard");
-    wrap.innerHTML = `<div class="muted" style="padding:24px">Loading next order…</div>`;
+    loadingCard("Loading next order…");
     let d; try { d = await (await fetch("/api/calling/next")).json(); } catch { wrap.innerHTML = `<div class="muted" style="padding:24px">Could not load the queue.</div>`; return; }
     if (d.error) { wrap.innerHTML = `<div class="muted" style="padding:24px">${esc(d.error)}</div>`; return; }
     renderToday(d.myDay);
@@ -457,14 +461,16 @@
   async function navMove(dir) {
     const o = callState.order;
     const from = o ? encodeURIComponent(o.orderNumber) : "";
+    loadingCard("Loading order…");
     try { applyNav(await (await fetch(`/api/calling/nav?dir=${dir}&from=${from}`)).json()); }
-    catch { /* ignore */ }
+    catch { loadingCard("Could not load. Try again."); }
   }
-  async function navJump() {
-    const v = ($("navJumpId").value || "").trim();
+  async function navJump(idArg) {
+    const v = (typeof idArg === "string" ? idArg : ($("navJumpId") && $("navJumpId").value) || "").trim();
     if (!v) return;
+    loadingCard("Opening order #" + v + "…");
     try { applyNav(await (await fetch(`/api/calling/nav?dir=jump&to=${encodeURIComponent(v)}`)).json()); }
-    catch { /* ignore */ }
+    catch { loadingCard("Could not load. Try again."); }
   }
   function flashCard(html, cls) {
     const el = document.createElement("div");
@@ -490,25 +496,49 @@
       $("callCard").innerHTML = `<div class="call-empty">✅ Nothing else in the queue right now.</div>`;
     }
   }
+  // Queue navigator: a panel listing every order due for calling.
+  async function openQueueList() {
+    let ov = $("queueOverlay");
+    if (!ov) {
+      ov = document.createElement("div");
+      ov.id = "queueOverlay"; ov.className = "queue-overlay";
+      ov.innerHTML = `<div class="queue-modal">
+        <div class="queue-head"><h3>Orders due for calling <span id="qlCount" class="muted"></span></h3>
+          <button id="qlClose" class="btn small">✕ Close</button></div>
+        <div id="qlBody"></div></div>`;
+      document.body.appendChild(ov);
+      ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
+      ov.querySelector("#qlClose").addEventListener("click", () => ov.remove());
+    }
+    const body = ov.querySelector("#qlBody");
+    body.innerHTML = spinnerHTML("Loading the queue…");
+    let d; try { d = await (await fetch("/api/calling/list")).json(); } catch { body.innerHTML = `<div class="muted" style="padding:20px">Could not load the list.</div>`; return; }
+    ov.querySelector("#qlCount").textContent = `(${d.total || 0}${d.mode === "backlog" ? " · backlog" : " due"})`;
+    const rows = (d.rows || []).map((r) => {
+      const items = (r.items || []).map((i) => `${esc(i.title)}${i.variant ? " " + esc(i.variant) : ""} ×${i.qty}`).join("<br>");
+      const status = r.busyWith ? `<span class="ql-busy">🔒 ${esc(r.busyWith)}</span>` : `<span class="avail">Available</span>`;
+      return `<tr>
+        <td><button class="link-btn ql-open" data-id="${esc(r.orderNumber)}">#${esc(r.orderNumber)}</button></td>
+        <td>${new Date(r.orderDate).toLocaleDateString()}</td>
+        <td>${items || "<span class='muted'>—</span>"}</td>
+        <td>${esc((r.payment || "").toUpperCase())}</td>
+        <td class="cust-cell">${esc(r.customer)}
+          <div class="cust-tip"><b>${esc(r.customer)}</b><br>${esc(r.address || "no address")}<br>📞 ${esc(r.phone || "—")}</div></td>
+        <td>${r.attemptsToday || 0}</td>
+        <td>${status}</td></tr>`;
+    }).join("");
+    body.innerHTML = (d.rows && d.rows.length)
+      ? `<table class="ql-table"><thead><tr><th>Order</th><th>Date</th><th>Items</th><th>Pay</th><th>Customer</th><th>Dials</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="muted" style="padding:20px">Nothing due right now.</div>`;
+    body.querySelectorAll(".ql-open").forEach((btn) => btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-id"); ov.remove(); navJump(id);
+    }));
+  }
   const SKIP_REASONS = ["No answer / ringing", "Phone busy", "Switched off / unreachable",
     "Call later (schedule)", "Customer will confirm later", "Wrong / invalid number",
     "Language barrier", "Other (type below)"];
   const OUTCOME_LABEL = { delivered: "Delivered", rto: "RTO", cancelled: "Cancelled", in_transit: "In transit", open: "Open" };
   function fmtDur(s) { s = Number(s) || 0; const m = Math.floor(s / 60), x = s % 60; return m ? `${m}m ${x}s` : `${x}s`; }
-  function rtoBadge(rto) {
-    if (!rto) return "";
-    const L = { low: "Low RTO risk", medium: "Medium RTO risk", high: "High RTO risk" }[rto.level] || "RTO risk";
-    return `<div class="rto-box rto-${esc(rto.level)}">
-        <div class="rto-top"><span class="rto-pill">⚠ ${esc(L)}</span>
-          <span class="muted small">${rto.stats.delivered} delivered · ${rto.stats.rto} RTO · ${rto.stats.cancelled} cancelled (${rto.stats.orders} past orders)</span></div>
-        <div class="muted small">${(rto.reasons || []).map(esc).join(" · ")}</div>
-      </div>`;
-  }
-  function pincodeBanner(p) {
-    if (!p) return "";
-    if (p.serviceable === false) return `<div class="pin-flag bad">⛔ PIN ${esc(p.value)} is marked NON-serviceable${p.note ? " — " + esc(p.note) : ""}</div>`;
-    return "";
-  }
   function callInfoLine(ci) {
     if (!ci) return "";
     const dur = ci.duration ? ` · ${fmtDur(ci.duration)}` : "";
@@ -526,6 +556,7 @@
       <div class="call-nav">
         <button id="navPrev" class="btn small">◀ Prev</button>
         <button id="navNext" class="btn small">Next ▶</button>
+        <button id="navList" class="btn small">📋 Queue list</button>
         <span class="nav-pos muted small">${esc(posText)}</span>
         <span class="nav-jump"><input id="navJumpId" class="input" placeholder="Go to order #" inputmode="numeric"><button id="navJumpGo" class="btn small">Go</button></span>
       </div>
@@ -534,7 +565,6 @@
           <div class="call-head"><h2>${esc(o.customer)}</h2><span class="risk-label ${o.risk}">${(o.risk || "").replace("_", " ")}</span><span class="tag-cod">COD</span></div>
           <div class="muted small">Order #${esc(o.orderNumber)} · ${new Date(o.createdAt).toLocaleString()} · source: <b>${esc(o.source)}</b> · attempt ${(o.attemptsToday || 0) + 1} (need ${o.required}/day)</div>
           ${o.wrapped ? `<div class="wrap-note">↻ All SLA calls are done — looping back to the oldest pending orders.</div>` : ""}
-          ${pincodeBanner(o.pincode)}
           <div class="call-phone">📞 ${o.phone ? esc(o.phone) : "<span class='muted'>no phone on order</span>"}</div>
           <div class="call-addr">${esc(a.line1)} ${esc(a.line2)}<br>${esc(a.city)}, ${esc(a.state)} ${esc(a.zip)}<br>${esc(a.country)}</div>
           <table class="call-items"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead>
@@ -551,7 +581,6 @@
               ? o.history.map((h) => `<li>${new Date(h.at).toLocaleString()} — <b>${esc(h.caller || "—")}</b> — ${esc(h.outcome || "")}</li>`).join("")
               : "<li class='muted'>No previous calls to this customer.</li>"}</ul>
           </div>
-          ${rtoBadge(o.rto)}
           <div class="cust-hist">
             <button id="caHistToggle" class="link-btn">▸ Customer order history (${hist.length})</button>
             <div id="caHistBody" class="hidden">
@@ -568,7 +597,6 @@
           <button id="caAddr" class="btn">✎ Modify address</button>
           <button id="caSkip" class="btn">↷ Skip / Call later</button>
           <button id="caCancel" class="btn danger">✕ Cancel order</button>
-          <button id="caPin" class="btn small ghost">${o.pincode && o.pincode.serviceable === false ? "✓ Mark PIN serviceable" : "⛔ Flag PIN non-serviceable"}</button>
         </div>
       </div>
       <div id="addrForm" class="panel hidden"></div>
@@ -578,9 +606,9 @@
     $("caSkip").addEventListener("click", toggleSkipForm);
     $("caCancel").addEventListener("click", cancelOrder);
     $("caAddr").addEventListener("click", toggleAddrForm);
-    $("caPin").addEventListener("click", togglePincode);
     $("navPrev").addEventListener("click", () => navMove("prev"));
     $("navNext").addEventListener("click", () => navMove("next"));
+    $("navList").addEventListener("click", openQueueList);
     $("navJumpGo").addEventListener("click", navJump);
     $("navJumpId").addEventListener("keydown", (e) => { if (e.key === "Enter") navJump(); });
     $("caHistToggle").addEventListener("click", () => {
@@ -605,17 +633,6 @@
       } catch (_) {}
       if (tries > 40) clearInterval(poll); // stop after ~3-4 min
     }, 5000);
-  }
-  async function togglePincode() {
-    const o = callState.order; const p = o.pincode || {};
-    if (!p.value) { alert("This order has no PIN code."); return; }
-    const makeNon = !(p.serviceable === false);
-    let note = "";
-    if (makeNon) { note = prompt(`Mark PIN ${p.value} as NON-serviceable. Optional note (courier/reason):`, p.note || "") ?? ""; }
-    else if (!confirm(`Mark PIN ${p.value} as serviceable again?`)) return;
-    const r = await postJson("/api/calling/pincode", { pincode: p.value, serviceable: !makeNon, note });
-    if (r.ok) { o.pincode = { value: p.value, serviceable: !makeNon, note }; renderCallCard(o); }
-    else alert(r.error || "Could not save.");
   }
   function toggleSkipForm() {
     const f = $("skipForm");
@@ -645,19 +662,23 @@
       if (!w) { $("sk_msg").textContent = "Pick a callback date & time."; return; }
       callbackAt = new Date(w).toISOString();
     }
+    loadingCard("Saving skip…");
     const r = await postJson("/api/calling/skip", { orderNumber: o.orderNumber, reason, note, callbackAt });
-    if (r.ok) renderCalling(); else alert(r.error || "");
+    if (r.ok) renderCalling(); else { alert(r.error || "Could not save."); renderCallCard(o); }
   }
   async function confirmOrder() {
-    const o = callState.order; const r = await postJson("/api/calling/confirm", { orderNumber: o.orderNumber, orderId: o.orderId });
-    if (r.ok) renderCalling(); else alert(r.error || "Could not confirm.");
+    const o = callState.order;
+    loadingCard("Confirming order in Shopify…");
+    const r = await postJson("/api/calling/confirm", { orderNumber: o.orderNumber, orderId: o.orderId });
+    if (r.ok) renderCalling(); else { alert(r.error || "Could not confirm."); renderCallCard(o); }
   }
   async function cancelOrder() {
     const o = callState.order;
     if (!confirm(`Cancel order #${o.orderNumber}? This cancels it in Shopify.`)) return;
     if (!confirm("Are you absolutely sure? This can't be undone.")) return;
+    loadingCard("Cancelling order in Shopify…");
     const r = await postJson("/api/calling/cancel", { orderNumber: o.orderNumber, orderId: o.orderId });
-    if (r.ok) renderCalling(); else alert(r.error || "Could not cancel.");
+    if (r.ok) renderCalling(); else { alert(r.error || "Could not cancel."); renderCallCard(o); }
   }
   function toggleAddrForm() {
     const f = $("addrForm");
@@ -1021,8 +1042,6 @@
 
     // User management
     $("nu_add").addEventListener("click", addUser);
-    // Calling
-    $("callNext").addEventListener("click", renderCalling);
 
     // Performance sections
     initPerf();
