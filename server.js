@@ -658,8 +658,7 @@ async function exotelConnect(agentPhone, customerPhone) {
   const body = new URLSearchParams({
     From: agentPhone, To: customerPhone, CallerId: callerId, CallType: "trans", TimeLimit: "1800",
     Record: "true",                                         // record the conversation
-    StatusCallback: `${PUBLIC_BASE}/webhooks/exotel`,       // Exotel posts recording + duration here
-    StatusCallbackEvents: "terminal",
+    StatusCallback: `${PUBLIC_BASE}/webhooks/exotel`,       // Exotel posts recording + duration here when the call ends
   });
   const res = await fetch(`https://${sub}/v1/Accounts/${sid}/Calls/connect.json`, {
     method: "POST", headers: { Authorization: `Basic ${auth64}`, "Content-Type": "application/x-www-form-urlencoded" }, body,
