@@ -768,7 +768,9 @@
 
   /* ---------------- navigation + theme ---------------- */
   const VIEWS = ["home", "delivery", "unit", "calling", "users"];
+  const HIDDEN_VIEWS = new Set(["calling"]);   // temporarily removed from the app
   function showView(name) {
+    if (HIDDEN_VIEWS.has(name)) name = "home";
     const view = VIEWS.includes(name) ? name : "home";
     document.body.dataset.view = view;
     VIEWS.forEach((v) => $("view-" + v).classList.toggle("hidden", v !== view));
@@ -841,10 +843,10 @@
    * ====================================================================== */
   const UE_FIELDS = ["sp","sp_g","disc","prod","prod_g","pkg","pkg_g","fwpp","fwpp_g",
     "fwcod","fwcod_g","rto","rto_g","codfee","codfee_g","codgw","codgw_g","ppgw","ppgw_g",
-    "crm","crm_g","addcost","ad","ad_g","codpct","codconf","coddeliv","ppdeliv"];
+    "crm","crm_g","ad","ad_g","codpct","codconf","coddeliv","ppdeliv"];
   const UE_DEFAULT = { sp:1499, sp_g:18, disc:5, prod:300, prod_g:18, pkg:25, pkg_g:18,
     fwpp:60, fwpp_g:18, fwcod:75, fwcod_g:18, rto:150, rto_g:18, codfee:40, codfee_g:18,
-    codgw:1.5, codgw_g:18, ppgw:2, ppgw_g:18, crm:8, crm_g:18, addcost:0, ad:150, ad_g:18,
+    codgw:1.5, codgw_g:18, ppgw:2, ppgw_g:18, crm:8, crm_g:18, ad:150, ad_g:18,
     codpct:"", codconf:"", coddeliv:"", ppdeliv:95 };
 
   const ueStore = () => loadJSON(LS.unit, {});
@@ -897,25 +899,35 @@
       const ks = Object.keys(L);
       return { rev, lines: L, costEx: ks.reduce((a, k) => a + L[k].ex, 0), inputGst: ks.reduce((a, k) => a + L[k].gst, 0), marginEx: rev.ex - ks.reduce((a, k) => a + L[k].ex, 0), outputGst: rev.gst };
     };
+    const zero = { incl: 0, ex: 0, gst: 0 };
     let cod = null;
     if (conf > 0 && deliv > 0) {
-      const shipped = 1 / deliv, rto = (1 - deliv) / deliv;
+      // Per net-delivered COD order. shipped multiple = 1/deliv; placed multiple = 1/(conf*deliv).
+      const shipped = 1 / deliv, returned = (1 - deliv) / deliv, placedCod = 1 / (conf * deliv);
       cod = summarise(line(I.sp, I.sp_g), {
-        product: line(I.prod, I.prod_g), packaging: line(I.pkg * shipped, I.pkg_g),
-        forward: line(I.fwcod * shipped, I.fwcod_g), rto: line(I.rto * rto, I.rto_g),
-        codFee: line(I.codfee, I.codfee_g), gateway: pctLine(I.sp, I.codgw, I.codgw_g), crm: line(I.crm * shipped, I.crm_g),
+        product: line(I.prod, I.prod_g),                       // net delivered ×1
+        packaging: line(I.pkg * shipped, I.pkg_g),             // all shipped COD
+        forward: line(I.fwcod * shipped, I.fwcod_g),           // all shipped COD
+        rto: line(I.rto * returned, I.rto_g),                  // all returned COD
+        codFee: line(I.codfee, I.codfee_g),                    // all delivered COD ×1
+        gateway: pctLine(I.sp * placedCod, I.codgw, I.codgw_g),// all placed COD
+        crm: line(I.crm * placedCod, I.crm_g),                 // all placed COD
       });
-      cod.placed = 1 / (conf * deliv);
+      cod.placed = placedCod;
     }
     let pp = null;
     if (ppDeliv > 0) {
-      const shipped = 1 / ppDeliv, rto = (1 - ppDeliv) / ppDeliv, spPp = I.sp * (1 - I.disc / 100);
+      // Prepaid: auto-confirmed, so placed = shipped = 1/ppDeliv. No return cost in the model.
+      const placedPp = 1 / ppDeliv, spPp = I.sp * (1 - I.disc / 100);
       pp = summarise(line(spPp, I.sp_g), {
-        product: line(I.prod, I.prod_g), packaging: line(I.pkg * shipped, I.pkg_g),
-        forward: line(I.fwpp * shipped, I.fwpp_g), rto: line(I.rto * rto, I.rto_g),
-        codFee: { incl: 0, ex: 0, gst: 0 }, gateway: pctLine(spPp * shipped, I.ppgw, I.ppgw_g), crm: { incl: 0, ex: 0, gst: 0 },
+        product: line(I.prod, I.prod_g),                       // net delivered ×1
+        packaging: line(I.pkg * placedPp, I.pkg_g),            // all shipped prepaid
+        forward: line(I.fwpp * placedPp, I.fwpp_g),            // all prepaid orders
+        rto: zero,                                             // prepaid: no return cost
+        codFee: zero, gateway: pctLine(spPp * placedPp, I.ppgw, I.ppgw_g), // all placed prepaid
+        crm: line(I.crm * placedPp, I.crm_g),                  // all placed prepaid
       });
-      pp.placed = 1 / ppDeliv;
+      pp.placed = placedPp;
     }
     const wCod = (codPct || 0) * (conf || 0) * (deliv || 0);
     const wPp = (1 - (codPct || 0)) * ppDeliv;
@@ -927,7 +939,7 @@
     const adEx = (I.ad || 0) * (placedMultiple || 0);
     const adGst = adEx * ((I.ad_g || 0) / 100);
     const breakevenAdPerOrder = blended && blendedDeliveryRate != null ? blended.marginEx * blendedDeliveryRate : null;
-    const netProfit = blended ? blended.marginEx - adEx - (I.addcost || 0) : null;
+    const netProfit = blended ? blended.marginEx - adEx : null;
     const ebitdaPct = blended && blended.revEx ? netProfit / blended.revEx : null;
     return { I, funnel: { codPct, conf, deliv, ppDeliv }, cod, pp, blended, blendedDeliveryRate, placedMultiple, adEx, adGst, breakevenAdPerOrder, netProfit, ebitdaPct };
   }
@@ -941,8 +953,8 @@
       ["Packaging", colCost(r.cod, "packaging"), colCost(r.pp, "packaging")],
       ["Forward shipping", colCost(r.cod, "forward"), colCost(r.pp, "forward")],
       ["RTO shipping", colCost(r.cod, "rto"), colCost(r.pp, "rto")],
-      ["COD fee", colCost(r.cod, "codFee"), colCost(r.pp, "codFee")],
-      ["Payment gateway", colCost(r.cod, "gateway"), colCost(r.pp, "gateway")],
+      ["COD remittance fee (per delivered)", colCost(r.cod, "codFee"), colCost(r.pp, "codFee")],
+      ["Payment gateway (COD: per placed)", colCost(r.cod, "gateway"), colCost(r.pp, "gateway")],
       ["CRM", colCost(r.cod, "crm"), colCost(r.pp, "crm")]];
     const body = rowsDef.map((row) => `<tr><td>${row[0]}</td><td class="num">${row[1]}</td><td class="num">${row[2]}</td></tr>`).join("");
     const marginPct = r.blended && r.blended.revEx ? r.blended.marginEx / r.blended.revEx : null;
@@ -976,7 +988,6 @@
         <tr><td>Breakeven ad cost / order placed</td><td class="num">${r.breakevenAdPerOrder == null ? "—" : m$(r.breakevenAdPerOrder)}</td></tr>
         <tr><td>Ad cost / order placed (input)</td><td class="num">${m$(-(r.I.ad || 0))}</td></tr>
         <tr><td>Ad cost / delivered (× ${r.placedMultiple == null ? "—" : r.placedMultiple.toFixed(2)})</td><td class="num">${m$(-r.adEx)}</td></tr>
-        <tr><td>Additional cost / order (ex-GST)</td><td class="num">${m$(-(r.I.addcost || 0))}</td></tr>
         <tr class="total-row"><td>EBITDA / net profit after GST set-off</td><td class="num" style="color:${r.netProfit >= 0 ? "var(--good)" : "var(--bad)"}">${r.netProfit == null ? "—" : m$(r.netProfit)}</td></tr>
         <tr class="total-row"><td>EBITDA % (÷ net revenue)</td><td class="num" style="color:${r.ebitdaPct >= 0 ? "var(--good)" : "var(--bad)"}">${fmtPct(r.ebitdaPct)}</td></tr>
       </tbody></table></div>`;
